@@ -1,72 +1,143 @@
-﻿using Google.Apis.Auth.OAuth2;
-using Google.Apis.Auth.OAuth2.Flows;
+﻿using Cms.GoogleOAuth.Exceptions;
+using Google.Apis.Auth.OAuth2;
+using Google.Apis.Auth.OAuth2.Responses;
 using Google.Apis.Util.Store;
 
 namespace Cms.GoogleOAuth;
 
-public class GoogleOAuthHelper
+/// <summary>
+/// Provides methods to authenticate and manage OAuth 2.0 tokens for Google APIs.
+/// </summary>
+/// <remarks>
+/// Initializes a new instance of the <see cref="GoogleOAuthHelper"/> class.
+/// </remarks>
+/// <param name="clientId">The client ID obtained from the Google API Console.</param>
+/// <param name="clientSecret">The client secret obtained from the Google API Console.</param>
+/// <param name="scopes">An array of scopes to request access to.</param>
+/// <param name="dataStore">The data store used to persist user credentials. If null, a default data store will be created.</param>
+public class GoogleOAuthHelper(string clientId, string clientSecret, string[] scopes, IDataStore? dataStore = null)
 {
-    private readonly GoogleAuthorizationCodeFlow _flow;
-    private readonly string _redirectUri;
+    private readonly string _clientId = clientId ?? throw new ArgumentNullException(nameof(clientId));
+    private readonly string _clientSecret = clientSecret ?? throw new ArgumentNullException(nameof(clientSecret));
+    private readonly string[] _scopes = scopes ?? throw new ArgumentNullException(nameof(scopes));
+    private readonly IDataStore _dataStore = dataStore ?? CreateDefaultDataStore();
 
     /// <summary>
-    /// Initializes a new instance of the GoogleOAuthHelper class.
+    /// Authenticates the user and returns a <see cref="UserCredential"/> object.
     /// </summary>
-    /// <param name="clientId">The client ID obtained from the Google API Console.</param>
-    /// <param name="clientSecret">The client secret obtained from the Google API Console.</param>
-    /// <param name="redirectUri">The redirect URI for the OAuth 2.0 flow.</param>
-    /// <param name="scopes">An array of scopes to request access to.</param>
-    /// <param name="dataStore">The data store used to persist user credentials.</param>
-    public GoogleOAuthHelper(string clientId, string clientSecret, string redirectUri, string[] scopes,
-        IDataStore? dataStore = null)
+    /// <returns>A <see cref="UserCredential"/> object containing the access and refresh tokens.</returns>
+    /// <exception cref="GoogleAuthException">Thrown when authentication fails.</exception>
+    public async Task<UserCredential> AuthenticateAsync()
     {
-        _redirectUri = redirectUri;
-        _flow = new GoogleAuthorizationCodeFlow(new GoogleAuthorizationCodeFlow.Initializer
+        try
         {
-            ClientSecrets = new ClientSecrets
+            var clientSecrets = new ClientSecrets
             {
-                ClientId = clientId,
-                ClientSecret = clientSecret
-            },
-            Scopes = scopes,
-            DataStore = dataStore ?? CreateDefaultDataStore()
-        });
+                ClientId = _clientId,
+                ClientSecret = _clientSecret
+            };
+
+            return await GoogleWebAuthorizationBroker.AuthorizeAsync(
+                clientSecrets,
+                _scopes,
+                "user",
+                CancellationToken.None,
+                _dataStore
+            );
+        }
+        catch (Exception ex)
+        {
+            throw new GoogleAuthException("Authentication failed", ex);
+        }
     }
 
     /// <summary>
-    /// Gets the authorization URL for the OAuth 2.0 flow.
+    /// Authenticates the user with additional scopes.
     /// </summary>
-    /// <returns>The authorization URL.</returns>
-    public string GetAuthorizationUrl() => _flow.CreateAuthorizationCodeRequest(_redirectUri).Build().ToString();
-
-    /// <summary>
-    /// Exchanges an authorization code for user credentials.
-    /// </summary>
-    /// <param name="code">The authorization code received from the OAuth 2.0 flow.</param>
-    /// <returns>A UserCredential object.</returns>
-    public async Task<UserCredential> ExchangeCodeForTokenAsync(string code)
+    /// <param name="additionalScopes">An array of additional scopes to request access to.</param>
+    /// <returns>A <see cref="UserCredential"/> object containing the access and refresh tokens.</returns>
+    /// <exception cref="ArgumentNullException">Thrown when additionalScopes is null.</exception>
+    /// <exception cref="GoogleAuthException">Thrown when incremental authentication fails.</exception>
+    public async Task<UserCredential> AuthenticateWithIncrementalScopesAsync(string[] additionalScopes)
     {
-        var token = await _flow.ExchangeCodeForTokenAsync("user", code, _redirectUri, CancellationToken.None);
-        return new UserCredential(_flow, "user", token);
+        ArgumentNullException.ThrowIfNull(additionalScopes);
+
+        var allScopes = new List<string>(_scopes);
+        allScopes.AddRange(additionalScopes);
+
+        try
+        {
+            var clientSecrets = new ClientSecrets
+            {
+                ClientId = _clientId,
+                ClientSecret = _clientSecret
+            };
+
+            return await GoogleWebAuthorizationBroker.AuthorizeAsync(
+                clientSecrets,
+                [.. allScopes],
+                "user",
+                CancellationToken.None,
+                _dataStore
+            );
+        }
+        catch (Exception ex)
+        {
+            throw new GoogleAuthException("Incremental authentication failed", ex);
+        }
     }
 
     /// <summary>
-    /// Refreshes the access token of a UserCredential.
+    /// Refreshes the access token of a given <see cref="UserCredential"/>.
     /// </summary>
-    /// <param name="credential">The UserCredential to refresh.</param>
-    /// <returns>The refreshed UserCredential.</returns>
+    /// <param name="credential">The <see cref="UserCredential"/> to refresh.</param>
+    /// <returns>The refreshed <see cref="UserCredential"/>.</returns>
+    /// <exception cref="ArgumentNullException">Thrown when credential is null.</exception>
+    /// <exception cref="GoogleAuthException">Thrown when token refresh fails.</exception>
     public static async Task<UserCredential> RefreshTokenAsync(UserCredential credential)
     {
-        await credential.RefreshTokenAsync(CancellationToken.None);
-        return credential;
+        ArgumentNullException.ThrowIfNull(credential);
+
+        try
+        {
+            await credential.RefreshTokenAsync(CancellationToken.None);
+            return credential;
+        }
+        catch (TokenResponseException ex)
+        {
+            throw new GoogleAuthException("Token refresh failed", ex);
+        }
     }
 
+    /// <summary>
+    /// Revokes the access token of a given <see cref="UserCredential"/>.
+    /// </summary>
+    /// <param name="credential">The <see cref="UserCredential"/> to revoke.</param>
+    /// <exception cref="ArgumentNullException">Thrown when credential is null.</exception>
+    /// <exception cref="GoogleAuthException">Thrown when token revocation fails.</exception>
+    public static async Task RevokeTokenAsync(UserCredential credential)
+    {
+        ArgumentNullException.ThrowIfNull(credential);
+
+        try
+        {
+            await credential.RevokeTokenAsync(CancellationToken.None);
+        }
+        catch (TokenResponseException ex)
+        {
+            throw new GoogleAuthException("Token revocation failed", ex);
+        }
+    }
+
+    /// <summary>
+    /// Creates a default data store for storing tokens.
+    /// </summary>
+    /// <returns>A default instance of <see cref="FileDataStore"/>.</returns>
     private static FileDataStore CreateDefaultDataStore()
     {
         var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         var storageDirectory = Path.Combine(appDataPath, "GoogleOAuth", "Tokens");
 
-        // Ensure the directory exists
         Directory.CreateDirectory(storageDirectory);
 
         return new FileDataStore(storageDirectory, true);
