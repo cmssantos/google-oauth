@@ -10,6 +10,10 @@
     <Company>CMS</Company>
     <Description>Google OAuth 2.0 authentication library</Description>
     <PackageTags>google;oauth;authentication</PackageTags>
+    <PackageProjectUrl>https://github.com/cmssantos/google-oauth</PackageProjectUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/cmssantos/google-oauth</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 
   <ItemGroup>
